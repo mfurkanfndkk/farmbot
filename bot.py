@@ -310,6 +310,18 @@ async def check_timers():
 async def before_check_timers():
     await bot.wait_until_ready()
 
+@bot.command(name="panel")
+async def prefix_panel(ctx):
+    embed = build_dashboard_embed()
+    view = DashboardView()
+    await ctx.send(embed=embed, view=view)
+
+@bot.command(name="durum")
+async def prefix_durum(ctx):
+    embed = build_dashboard_embed()
+    view = DashboardView()
+    await ctx.send(embed=embed, view=view)
+
 @bot.tree.command(name="panel", description="Etkileşimli butonlu tarla kontrol panelini açar.")
 async def cmd_panel(interaction: discord.Interaction):
     embed = build_dashboard_embed()
