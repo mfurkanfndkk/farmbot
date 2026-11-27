@@ -260,8 +260,10 @@ class AlertHarvestView(discord.ui.View):
 
 async def generate_tts_alert(text: str, filename: str = "alert.mp3") -> str:
     path = Path(filename)
-    tts = gTTS(text=text, lang="tr")
-    tts.save(str(path))
+    def _create():
+        tts = gTTS(text=text, lang="tr", slow=False)
+        tts.save(str(path))
+    await asyncio.to_thread(_create)
     return str(path)
 
 async def play_voice_alert(channel: discord.VoiceChannel, audio_file: str):
@@ -272,11 +274,22 @@ async def play_voice_alert(channel: discord.VoiceChannel, audio_file: str):
 
         try:
             vc = await channel.connect()
-            source = discord.FFmpegPCMAudio(source=audio_file, executable=FFMPEG_PATH)
-            vc.play(source)
+            # UDP ses soketinin ve istemci jitter buffer'ının oturması için bekleme
+            await asyncio.sleep(1.2)
+
+            # Ses seviyesini yükseltip 48kHz PCM standart Discord formatına zorlama
+            ffmpeg_options = {
+                'options': '-vn -filter:a "volume=2.5"'
+            }
+            audio_source = discord.FFmpegPCMAudio(source=audio_file, executable=FFMPEG_PATH, **ffmpeg_options)
+            transformed = discord.PCMVolumeTransformer(audio_source, volume=1.5)
+            
+            vc.play(transformed)
             while vc.is_playing():
-                await asyncio.sleep(0.5)
-            await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
+                
+            # Son ses paketlerinin Discord sunucusundan kullanıcılara ulaşması için bekleme
+            await asyncio.sleep(1.2)
             await vc.disconnect()
         except Exception as e:
             print(f"[SES HATA] {channel.name} odasında ses çalınamadı: {e}")
@@ -409,7 +422,7 @@ async def prefix_test_ses(ctx):
         return
 
     await ctx.send(f"🔊 **{vc.name}** odasına girilip ses testi yapılıyor...")
-    audio = await generate_tts_alert("Test uyarısı! Hasat botu ses sistemi sorunsuz çalışıyor.")
+    audio = await generate_tts_alert("Dikkat dikkat! Rob Run hasat botu ses sistemi başarıyla çalışıyor. Ses seviyesi kontrol edildi.")
     await play_voice_alert(vc, audio)
     await ctx.send("✅ Ses testi tamamlandı!")
 
@@ -430,7 +443,7 @@ async def cmd_test_ses(interaction: discord.Interaction):
         return
 
     await interaction.response.send_message(f"🔊 **{target_vc.name}** kanalına girilip ses testi başlatılıyor...")
-    audio = await generate_tts_alert("Test uyarısı! Hasat botu ses sistemi sorunsuz çalışıyor.")
+    audio = await generate_tts_alert("Dikkat dikkat! Rob Run hasat botu ses sistemi başarıyla çalışıyor. Ses seviyesi kontrol edildi.")
     await play_voice_alert(target_vc, audio)
     await interaction.followup.send("✅ Ses testi başarıyla tamamlandı!", ephemeral=True)
 
