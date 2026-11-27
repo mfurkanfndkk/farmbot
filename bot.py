@@ -118,6 +118,7 @@ class DeletePlotSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=options,
+            custom_id="panel_delete_select",
             row=3
         )
 
@@ -371,12 +372,19 @@ async def cmd_kanal_ayarla(interaction: discord.Interaction, kanal: discord.Text
 
 @bot.event
 async def on_ready():
-    database.init_db()
-    bot.add_view(DashboardView())
-    await bot.tree.sync()
+    await start_web_server()
+    try:
+        database.init_db()
+    except Exception as e:
+        print(f"[DB HATA] init_db başarısız: {e}")
+
+    try:
+        await bot.tree.sync()
+    except Exception as e:
+        print(f"[KOMUT HATA] tree.sync başarısız: {e}")
+
     if not check_timers.is_running():
         check_timers.start()
-    await start_web_server()
     print(f"[+] Bot aktif: {bot.user} (ID: {bot.user.id})")
 
 if __name__ == "__main__":
