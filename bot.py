@@ -396,6 +396,44 @@ async def check_timers():
 async def before_check_timers():
     await bot.wait_until_ready()
 
+@bot.command(name="test_ses")
+async def prefix_test_ses(ctx):
+    vc = ctx.author.voice.channel if ctx.author.voice else None
+    if not vc:
+        for c in ctx.guild.voice_channels:
+            if [m for m in c.members if not m.bot]:
+                vc = c
+                break
+    if not vc:
+        await ctx.send("❌ Bir sesli kanala katılmalısın veya sesli kanalda biri olmalı.")
+        return
+
+    await ctx.send(f"🔊 **{vc.name}** odasına girilip ses testi yapılıyor...")
+    audio = await generate_tts_alert("Test uyarısı! Hasat botu ses sistemi sorunsuz çalışıyor.")
+    await play_voice_alert(vc, audio)
+    await ctx.send("✅ Ses testi tamamlandı!")
+
+@bot.tree.command(name="test_ses", description="Botun sesli odaya girip konuşmasını anında test eder.")
+async def cmd_test_ses(interaction: discord.Interaction):
+    guild = interaction.guild
+    user_vc = interaction.user.voice.channel if interaction.user.voice else None
+    target_vc = user_vc
+
+    if not target_vc and guild:
+        for c in guild.voice_channels:
+            if [m for m in c.members if not m.bot]:
+                target_vc = c
+                break
+
+    if not target_vc:
+        await interaction.response.send_message("❌ Bir sesli kanala girmelisin veya bir odada kullanıcı olmalı.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f"🔊 **{target_vc.name}** kanalına girilip ses testi başlatılıyor...")
+    audio = await generate_tts_alert("Test uyarısı! Hasat botu ses sistemi sorunsuz çalışıyor.")
+    await play_voice_alert(target_vc, audio)
+    await interaction.followup.send("✅ Ses testi başarıyla tamamlandı!", ephemeral=True)
+
 @bot.command(name="panel")
 async def prefix_panel(ctx):
     embed = build_dashboard_embed()
