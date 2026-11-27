@@ -260,10 +260,30 @@ class AlertHarvestView(discord.ui.View):
 
 async def generate_tts_alert(text: str, filename: str = "alert.mp3") -> str:
     path = Path(filename)
-    def _create():
-        tts = gTTS(text=text, lang="tr", slow=False)
-        tts.save(str(path))
-    await asyncio.to_thread(_create)
+    try:
+        def _create():
+            tts = gTTS(text=text, lang="tr", slow=False)
+            tts.save(str(path))
+        await asyncio.to_thread(_create)
+        size = path.stat().st_size
+        print(f"[SES] TTS dosyası üretildi: {size} bayt")
+        if size < 500:
+            raise ValueError("TTS dosyası çok küçük veya boş")
+    except Exception as e:
+        print(f"[SES UYARI] gTTS başarısız veya engellendi ({e}). FFmpeg dahili alarm sesi üretiliyor...")
+        # FFmpeg ile doğrudan iki tonlu yüksek sesli melodi sentezle
+        proc = await asyncio.create_subprocess_exec(
+            FFMPEG_PATH, "-y", "-nostdin",
+            "-f", "lavfi", "-i", "sine=frequency=750:duration=0.4",
+            "-f", "lavfi", "-i", "sine=frequency=1100:duration=0.6",
+            "-filter_complex", "[0:0][1:0]concat=n=2:v=0:a=1[out]",
+            "-map", "[out]", str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        print(f"[SES] Dahili FFmpeg alarmı oluşturuldu: {path.stat().st_size} bayt")
+
     return str(path)
 
 async def play_voice_alert(channel: discord.VoiceChannel, audio_file: str):
@@ -274,23 +294,25 @@ async def play_voice_alert(channel: discord.VoiceChannel, audio_file: str):
 
         try:
             vc = await channel.connect()
-            # UDP ses soketinin ve istemci jitter buffer'ının oturması için bekleme
+            # UDP soketinin oturması için bekleme
             await asyncio.sleep(1.2)
 
-            # Ses seviyesini yükseltip 48kHz PCM standart Discord formatına zorlama
-            ffmpeg_options = {
-                'options': '-vn -filter:a "volume=2.5"'
-            }
-            audio_source = discord.FFmpegPCMAudio(source=audio_file, executable=FFMPEG_PATH, **ffmpeg_options)
-            transformed = discord.PCMVolumeTransformer(audio_source, volume=1.5)
+            # -nostdin: Docker container içinde stdin askıda kalmasını engeller
+            source = discord.FFmpegPCMAudio(
+                source=audio_file,
+                executable=FFMPEG_PATH,
+                before_options="-nostdin",
+                options="-vn -filter:a volume=3.0"
+            )
+            transformed = discord.PCMVolumeTransformer(source, volume=1.5)
             
             vc.play(transformed)
             while vc.is_playing():
                 await asyncio.sleep(0.3)
                 
-            # Son ses paketlerinin Discord sunucusundan kullanıcılara ulaşması için bekleme
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(1.0)
             await vc.disconnect()
+            print(f"[SES] {channel.name} odasında oynatma başarıyla tamamlandı.")
         except Exception as e:
             print(f"[SES HATA] {channel.name} odasında ses çalınamadı: {e}")
             if channel.guild.voice_client:
@@ -522,6 +544,14 @@ async def cmd_kanal_ayarla(interaction: discord.Interaction, kanal: discord.Text
 @bot.event
 async def on_ready():
     await start_web_server()
+
+    if not discord.opus.is_loaded():
+        try:
+            discord.opus.load_opus("libopus.so.0")
+            print("[+] libopus başarıyla yüklendi.")
+        except Exception as e:
+            print(f"[!] libopus manuel yükleme uyarısı: {e}")
+
     try:
         database.init_db()
     except Exception as e:
