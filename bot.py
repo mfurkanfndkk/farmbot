@@ -126,18 +126,6 @@ class DeletePlotSelect(discord.ui.Select):
             row=3
         )
 
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        plot_id = int(self.values[0])
-        def _delete():
-            database.delete_plot(plot_id)
-            return database.get_all_plots()
-        
-        plots = await asyncio.to_thread(_delete)
-        new_embed = build_dashboard_embed(plots)
-        new_view = DashboardView(plots)
-        await interaction.edit_original_response(embed=new_embed, view=new_view)
-
 class DashboardView(discord.ui.View):
     def __init__(self, plots=None):
         super().__init__(timeout=None)
@@ -145,38 +133,32 @@ class DashboardView(discord.ui.View):
             plots = database.get_all_plots()
 
         # Row 0: Ana Aksiyon Butonları
-        add_btn = discord.ui.Button(
+        self.add_item(discord.ui.Button(
             label="Yeni Çalı Ekle",
             style=discord.ButtonStyle.primary,
             emoji="🌱",
             custom_id="panel_add_btn",
             row=0
-        )
-        add_btn.callback = self.add_callback
-        self.add_item(add_btn)
+        ))
 
-        refresh_btn = discord.ui.Button(
+        self.add_item(discord.ui.Button(
             label="Yenile",
             style=discord.ButtonStyle.secondary,
             emoji="🔄",
             custom_id="panel_refresh_btn",
             row=0
-        )
-        refresh_btn.callback = self.refresh_callback
-        self.add_item(refresh_btn)
+        ))
 
         if plots:
-            harvest_all_btn = discord.ui.Button(
+            self.add_item(discord.ui.Button(
                 label="Tümünü Hasat Et",
                 style=discord.ButtonStyle.success,
                 emoji="🌾",
                 custom_id="panel_harvest_all_btn",
                 row=0
-            )
-            harvest_all_btn.callback = self.harvest_all_callback
-            self.add_item(harvest_all_btn)
+            ))
 
-            # Row 1 & 2: Çalı Hasat Butonları (Her çalı için doğrudan buton)
+            # Row 1 & 2: Çalı Hasat Butonları
             now = datetime.datetime.now(datetime.timezone.utc)
             for idx, p in enumerate(plots[:10]):
                 next_dt = datetime.datetime.fromisoformat(p["next_harvest"])
@@ -184,79 +166,26 @@ class DashboardView(discord.ui.View):
                 style = discord.ButtonStyle.success if is_ready else discord.ButtonStyle.secondary
                 row_idx = 1 if idx < 5 else 2
 
-                btn = discord.ui.Button(
+                self.add_item(discord.ui.Button(
                     label=f"#{p['id']} {p['name']} ({'HAZIR' if is_ready else 'Hasat'})",
                     style=style,
                     emoji="🌾",
                     custom_id=f"panel_harvest_{p['id']}",
                     row=row_idx
-                )
-                btn.callback = self.create_harvest_callback(p['id'])
-                self.add_item(btn)
+                ))
 
             # Row 3: Silme Dropdown'u
             self.add_item(DeletePlotSelect(plots))
 
-    async def add_callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(AddPlotModal())
-
-    async def refresh_callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        plots = await asyncio.to_thread(database.get_all_plots)
-        new_embed = build_dashboard_embed(plots)
-        new_view = DashboardView(plots)
-        await interaction.edit_original_response(embed=new_embed, view=new_view)
-
-    async def harvest_all_callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        def _harvest_all():
-            for p in database.get_all_plots():
-                database.record_harvest(p["id"])
-            return database.get_all_plots()
-        
-        plots = await asyncio.to_thread(_harvest_all)
-        new_embed = build_dashboard_embed(plots)
-        new_view = DashboardView(plots)
-        await interaction.edit_original_response(embed=new_embed, view=new_view)
-
-    def create_harvest_callback(self, plot_id: int):
-        async def callback(interaction: discord.Interaction):
-            await interaction.response.defer()
-            def _harvest():
-                database.record_harvest(plot_id)
-                return database.get_all_plots()
-            
-            plots = await asyncio.to_thread(_harvest)
-            new_embed = build_dashboard_embed(plots)
-            new_view = DashboardView(plots)
-            await interaction.edit_original_response(embed=new_embed, view=new_view)
-        return callback
-
 class AlertHarvestView(discord.ui.View):
     def __init__(self, plot_id: int, plot_name: str):
         super().__init__(timeout=None)
-        button = discord.ui.Button(
+        self.add_item(discord.ui.Button(
             label=f"Hasat Ettim (#{plot_id} {plot_name})",
             style=discord.ButtonStyle.success,
             emoji="🌾",
             custom_id=f"alert_harvest_{plot_id}"
-        )
-        button.callback = self.create_callback(plot_id)
-        self.add_item(button)
-
-    def create_callback(self, plot_id: int):
-        async def callback(interaction: discord.Interaction):
-            updated = database.record_harvest(plot_id)
-            if not updated:
-                await interaction.response.send_message("Tarla bulunamadı.", ephemeral=True)
-                return
-            next_dt = datetime.datetime.fromisoformat(updated["next_harvest"])
-            ts = int(next_dt.timestamp())
-            await interaction.response.send_message(
-                f"✅ **#{updated['id']} {updated['name']}** hasat edildi! Yeni hasat: <t:{ts}:R> (<t:{ts}:T>)",
-                ephemeral=False
-            )
-        return callback
+        ))
 
 async def generate_tts_alert(text: str, filename: str = "alert.mp3") -> str:
     path = Path(filename)
@@ -334,7 +263,11 @@ async def handle_component_interaction(interaction: discord.Interaction):
     if not (custom_id.startswith("panel_") or custom_id.startswith("alert_")):
         return
 
-    await interaction.response.defer()
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except discord.errors.HTTPException:
+            pass
 
     if custom_id == "panel_refresh_btn":
         plots = await asyncio.to_thread(database.get_all_plots)
