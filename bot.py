@@ -297,14 +297,14 @@ async def play_voice_alert(channel: discord.VoiceChannel, audio_file: str):
             # UDP soketinin oturması için bekleme
             await asyncio.sleep(1.2)
 
-            # -nostdin: Docker container içinde stdin askıda kalmasını engeller
+            # Standart dengeli ses seviyesi
             source = discord.FFmpegPCMAudio(
                 source=audio_file,
                 executable=FFMPEG_PATH,
                 before_options="-nostdin",
-                options="-vn -filter:a volume=3.0"
+                options="-vn"
             )
-            transformed = discord.PCMVolumeTransformer(source, volume=1.5)
+            transformed = discord.PCMVolumeTransformer(source, volume=0.8)
             
             vc.play(transformed)
             while vc.is_playing():
