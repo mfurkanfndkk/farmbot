@@ -38,8 +38,9 @@ async def start_web_server():
     await site.start()
     print(f"[+] Web sunucusu port {PORT} üzerinde dinliyor.")
 
-def build_dashboard_embed() -> discord.Embed:
-    plots = database.get_all_plots()
+def build_dashboard_embed(plots=None) -> discord.Embed:
+    if plots is None:
+        plots = database.get_all_plots()
     embed = discord.Embed(
         title="🌿 Rob Run — Çalı & Tarla Kontrol Paneli",
         description="Aşağıdaki butonları kullanarak yeni çalı ekleyebilir, hasat edebilir veya silebilirsiniz.",
@@ -86,21 +87,24 @@ class AddPlotModal(discord.ui.Modal, title="🌱 Yeni Çalı Ekle"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         try:
             dakika = int(self.duration_input.value.strip())
             if dakika <= 0:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("❌ Lütfen geçerli bir pozitif dakika sayısı girin.", ephemeral=True)
+            await interaction.followup.send("❌ Lütfen geçerli bir pozitif dakika sayısı girin.", ephemeral=True)
             return
 
         name = self.name_input.value.strip()
-        database.add_plot(name, dakika * 60)
+        def _add():
+            database.add_plot(name, dakika * 60)
+            return database.get_all_plots()
         
-        # Paneli yerinde güncelle
-        new_embed = build_dashboard_embed()
-        new_view = DashboardView()
-        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        plots = await asyncio.to_thread(_add)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
 
 class DeletePlotSelect(discord.ui.Select):
     def __init__(self, plots):
@@ -123,16 +127,22 @@ class DeletePlotSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         plot_id = int(self.values[0])
-        database.delete_plot(plot_id)
-        new_embed = build_dashboard_embed()
-        new_view = DashboardView()
-        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        def _delete():
+            database.delete_plot(plot_id)
+            return database.get_all_plots()
+        
+        plots = await asyncio.to_thread(_delete)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
 
 class DashboardView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, plots=None):
         super().__init__(timeout=None)
-        plots = database.get_all_plots()
+        if plots is None:
+            plots = database.get_all_plots()
 
         # Row 0: Ana Aksiyon Butonları
         add_btn = discord.ui.Button(
@@ -191,24 +201,35 @@ class DashboardView(discord.ui.View):
         await interaction.response.send_modal(AddPlotModal())
 
     async def refresh_callback(self, interaction: discord.Interaction):
-        new_embed = build_dashboard_embed()
-        new_view = DashboardView()
-        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        await interaction.response.defer()
+        plots = await asyncio.to_thread(database.get_all_plots)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
 
     async def harvest_all_callback(self, interaction: discord.Interaction):
-        plots = database.get_all_plots()
-        for p in plots:
-            database.record_harvest(p["id"])
-        new_embed = build_dashboard_embed()
-        new_view = DashboardView()
-        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        await interaction.response.defer()
+        def _harvest_all():
+            for p in database.get_all_plots():
+                database.record_harvest(p["id"])
+            return database.get_all_plots()
+        
+        plots = await asyncio.to_thread(_harvest_all)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
 
     def create_harvest_callback(self, plot_id: int):
         async def callback(interaction: discord.Interaction):
-            database.record_harvest(plot_id)
-            new_embed = build_dashboard_embed()
-            new_view = DashboardView()
-            await interaction.response.edit_message(embed=new_embed, view=new_view)
+            await interaction.response.defer()
+            def _harvest():
+                database.record_harvest(plot_id)
+                return database.get_all_plots()
+            
+            plots = await asyncio.to_thread(_harvest)
+            new_embed = build_dashboard_embed(plots)
+            new_view = DashboardView(plots)
+            await interaction.edit_original_response(embed=new_embed, view=new_view)
         return callback
 
 class AlertHarvestView(discord.ui.View):
