@@ -283,6 +283,71 @@ async def play_voice_alert(channel: discord.VoiceChannel, audio_file: str):
             if channel.guild.voice_client:
                 await channel.guild.voice_client.disconnect(force=True)
 
+@bot.listen("on_interaction")
+async def handle_component_interaction(interaction: discord.Interaction):
+    if interaction.type != discord.InteractionType.component:
+        return
+    if interaction.response.is_done():
+        return
+    
+    custom_id = interaction.data.get("custom_id", "")
+    
+    if custom_id == "panel_add_btn":
+        await interaction.response.send_modal(AddPlotModal())
+        return
+
+    if not (custom_id.startswith("panel_") or custom_id.startswith("alert_")):
+        return
+
+    await interaction.response.defer()
+
+    if custom_id == "panel_refresh_btn":
+        plots = await asyncio.to_thread(database.get_all_plots)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
+
+    elif custom_id == "panel_harvest_all_btn":
+        def _harvest_all():
+            for p in database.get_all_plots():
+                database.record_harvest(p["id"])
+            return database.get_all_plots()
+        plots = await asyncio.to_thread(_harvest_all)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
+
+    elif custom_id.startswith("panel_harvest_"):
+        plot_id = int(custom_id.split("_")[-1])
+        def _harvest():
+            database.record_harvest(plot_id)
+            return database.get_all_plots()
+        plots = await asyncio.to_thread(_harvest)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
+
+    elif custom_id == "panel_delete_select":
+        plot_id = int(interaction.data["values"][0])
+        def _delete():
+            database.delete_plot(plot_id)
+            return database.get_all_plots()
+        plots = await asyncio.to_thread(_delete)
+        new_embed = build_dashboard_embed(plots)
+        new_view = DashboardView(plots)
+        await interaction.edit_original_response(embed=new_embed, view=new_view)
+
+    elif custom_id.startswith("alert_harvest_"):
+        plot_id = int(custom_id.split("_")[-1])
+        updated = await asyncio.to_thread(database.record_harvest, plot_id)
+        if updated:
+            next_dt = datetime.datetime.fromisoformat(updated["next_harvest"])
+            ts = int(next_dt.timestamp())
+            await interaction.followup.send(
+                f"✅ **#{updated['id']} {updated['name']}** hasat edildi! Yeni hasat: <t:{ts}:R>",
+                ephemeral=True
+            )
+
 @tasks.loop(seconds=5.0)
 async def check_timers():
     try:
