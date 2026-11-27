@@ -38,17 +38,189 @@ async def start_web_server():
     await site.start()
     print(f"[+] Web sunucusu port {PORT} üzerinde dinliyor.")
 
-class HarvestView(discord.ui.View):
+def build_dashboard_embed() -> discord.Embed:
+    plots = database.get_all_plots()
+    embed = discord.Embed(
+        title="🌿 Rob Run — Çalı & Tarla Kontrol Paneli",
+        description="Aşağıdaki butonları kullanarak yeni çalı ekleyebilir, hasat edebilir veya silebilirsiniz.",
+        color=discord.Color.teal(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc)
+    )
+
+    if not plots:
+        embed.add_field(
+            name="Kayıtlı Çalı Yok",
+            value="Şu anda takip edilen çalı bulunmuyor.\nAşağıdaki **🌱 Yeni Çalı Ekle** butonuna tıklayarak ekleyin.",
+            inline=False
+        )
+        return embed
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for p in plots:
+        next_dt = datetime.datetime.fromisoformat(p["next_harvest"])
+        ts = int(next_dt.timestamp())
+        is_ready = now >= next_dt
+        status = "🟢 **HASAT HAZIR!**" if is_ready else "⏳ **Büyüyor**"
+        
+        embed.add_field(
+            name=f"#{p['id']} - {p['name']} ({status})",
+            value=f"• Süre: {p['duration_seconds'] // 60} dakika\n• Hasat Zamanı: <t:{ts}:R> (<t:{ts}:T>)",
+            inline=False
+        )
+
+    embed.set_footer(text="Son Güncelleme")
+    return embed
+
+class AddPlotModal(discord.ui.Modal, title="🌱 Yeni Çalı Ekle"):
+    name_input = discord.ui.TextInput(
+        label="Bitki / Çalı Adı",
+        placeholder="Örn: Nane, Böğürtlen, Çilek...",
+        required=True,
+        max_length=50
+    )
+    duration_input = discord.ui.TextInput(
+        label="Büyüme Süresi (Dakika)",
+        placeholder="Örn: 31",
+        required=True,
+        max_length=5
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            dakika = int(self.duration_input.value.strip())
+            if dakika <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ Lütfen geçerli bir pozitif dakika sayısı girin.", ephemeral=True)
+            return
+
+        name = self.name_input.value.strip()
+        database.add_plot(name, dakika * 60)
+        
+        # Paneli yerinde güncelle
+        new_embed = build_dashboard_embed()
+        new_view = DashboardView()
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+
+class DeletePlotSelect(discord.ui.Select):
     def __init__(self, plots):
-        super().__init__(timeout=None)
-        for plot in plots[:5]:
-            button = discord.ui.Button(
-                label=f"Hasat Et #{plot['id']} ({plot['name']})",
-                style=discord.ButtonStyle.success,
-                custom_id=f"harvest_{plot['id']}"
+        options = [
+            discord.SelectOption(
+                label=f"#{p['id']} - {p['name']}",
+                value=str(p['id']),
+                description=f"Periyot: {p['duration_seconds'] // 60} dk",
+                emoji="🗑️"
             )
-            button.callback = self.create_callback(plot['id'])
-            self.add_item(button)
+            for p in plots[:25]
+        ]
+        super().__init__(
+            placeholder="Silmek istediğiniz çalıyı seçin...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=3
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        plot_id = int(self.values[0])
+        database.delete_plot(plot_id)
+        new_embed = build_dashboard_embed()
+        new_view = DashboardView()
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+
+class DashboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        plots = database.get_all_plots()
+
+        # Row 0: Ana Aksiyon Butonları
+        add_btn = discord.ui.Button(
+            label="Yeni Çalı Ekle",
+            style=discord.ButtonStyle.primary,
+            emoji="🌱",
+            custom_id="panel_add_btn",
+            row=0
+        )
+        add_btn.callback = self.add_callback
+        self.add_item(add_btn)
+
+        refresh_btn = discord.ui.Button(
+            label="Yenile",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔄",
+            custom_id="panel_refresh_btn",
+            row=0
+        )
+        refresh_btn.callback = self.refresh_callback
+        self.add_item(refresh_btn)
+
+        if plots:
+            harvest_all_btn = discord.ui.Button(
+                label="Tümünü Hasat Et",
+                style=discord.ButtonStyle.success,
+                emoji="🌾",
+                custom_id="panel_harvest_all_btn",
+                row=0
+            )
+            harvest_all_btn.callback = self.harvest_all_callback
+            self.add_item(harvest_all_btn)
+
+            # Row 1 & 2: Çalı Hasat Butonları (Her çalı için doğrudan buton)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            for idx, p in enumerate(plots[:10]):
+                next_dt = datetime.datetime.fromisoformat(p["next_harvest"])
+                is_ready = now >= next_dt
+                style = discord.ButtonStyle.success if is_ready else discord.ButtonStyle.secondary
+                row_idx = 1 if idx < 5 else 2
+
+                btn = discord.ui.Button(
+                    label=f"#{p['id']} {p['name']} ({'HAZIR' if is_ready else 'Hasat'})",
+                    style=style,
+                    emoji="🌾",
+                    custom_id=f"panel_harvest_{p['id']}",
+                    row=row_idx
+                )
+                btn.callback = self.create_harvest_callback(p['id'])
+                self.add_item(btn)
+
+            # Row 3: Silme Dropdown'u
+            self.add_item(DeletePlotSelect(plots))
+
+    async def add_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(AddPlotModal())
+
+    async def refresh_callback(self, interaction: discord.Interaction):
+        new_embed = build_dashboard_embed()
+        new_view = DashboardView()
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+
+    async def harvest_all_callback(self, interaction: discord.Interaction):
+        plots = database.get_all_plots()
+        for p in plots:
+            database.record_harvest(p["id"])
+        new_embed = build_dashboard_embed()
+        new_view = DashboardView()
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+
+    def create_harvest_callback(self, plot_id: int):
+        async def callback(interaction: discord.Interaction):
+            database.record_harvest(plot_id)
+            new_embed = build_dashboard_embed()
+            new_view = DashboardView()
+            await interaction.response.edit_message(embed=new_embed, view=new_view)
+        return callback
+
+class AlertHarvestView(discord.ui.View):
+    def __init__(self, plot_id: int, plot_name: str):
+        super().__init__(timeout=None)
+        button = discord.ui.Button(
+            label=f"Hasat Ettim (#{plot_id} {plot_name})",
+            style=discord.ButtonStyle.success,
+            emoji="🌾",
+            custom_id=f"alert_harvest_{plot_id}"
+        )
+        button.callback = self.create_callback(plot_id)
+        self.add_item(button)
 
     def create_callback(self, plot_id: int):
         async def callback(interaction: discord.Interaction):
@@ -59,7 +231,7 @@ class HarvestView(discord.ui.View):
             next_dt = datetime.datetime.fromisoformat(updated["next_harvest"])
             ts = int(next_dt.timestamp())
             await interaction.response.send_message(
-                f"✅ **#{updated['id']} {updated['name']}** hasat edildi! Yeni hasat zamanı: <t:{ts}:R> (<t:{ts}:T>)",
+                f"✅ **#{updated['id']} {updated['name']}** hasat edildi! Yeni hasat: <t:{ts}:R> (<t:{ts}:T>)",
                 ephemeral=False
             )
         return callback
@@ -130,12 +302,18 @@ async def check_timers():
                     color=discord.Color.green(),
                     timestamp=datetime.datetime.now(datetime.timezone.utc)
                 )
-                view = HarvestView([plot])
+                view = AlertHarvestView(plot["id"], plot["name"])
                 await channel.send(embed=embed, view=view)
 
 @check_timers.before_loop
 async def before_check_timers():
     await bot.wait_until_ready()
+
+@bot.tree.command(name="panel", description="Etkileşimli butonlu tarla kontrol panelini açar.")
+async def cmd_panel(interaction: discord.Interaction):
+    embed = build_dashboard_embed()
+    view = DashboardView()
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="ekle", description="Yeni bir bitki/çalı zamanlayıcısı ekler.")
 @app_commands.describe(isim="Bitkinin veya çalının adı", dakika="Büyüme süresi (dakika)")
@@ -173,34 +351,8 @@ async def cmd_hasat_et(interaction: discord.Interaction, tarla_id: int):
 
 @bot.tree.command(name="durum", description="Tüm çalıların ve hasat sürelerinin durumunu listeler.")
 async def cmd_durum(interaction: discord.Interaction):
-    plots = database.get_all_plots()
-    if not plots:
-        await interaction.response.send_message("Kayıtlı çalı veya tarla bulunmuyor. `/ekle` komutu ile ekle.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="🌿 Rob Run Tarla & Çalı Durumu",
-        color=discord.Color.teal(),
-        timestamp=datetime.datetime.now(datetime.timezone.utc)
-    )
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    due_list = []
-    
-    for p in plots:
-        next_dt = datetime.datetime.fromisoformat(p["next_harvest"])
-        ts = int(next_dt.timestamp())
-        is_ready = now >= next_dt
-        status_icon = "🟢 HAZIR" if is_ready else "⏳ Büyüyor"
-        embed.add_field(
-            name=f"#{p['id']} - {p['name']} ({status_icon})",
-            value=f"• Periyot: {p['duration_seconds'] // 60} dk\n• Hedef: <t:{ts}:R> (<t:{ts}:T>)",
-            inline=False
-        )
-        if is_ready:
-            due_list.append(p)
-
-    view = HarvestView(due_list) if due_list else None
+    embed = build_dashboard_embed()
+    view = DashboardView()
     await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="sil", description="Kayıtlı bir çalı/tarlayı siler.")
@@ -220,6 +372,7 @@ async def cmd_kanal_ayarla(interaction: discord.Interaction, kanal: discord.Text
 @bot.event
 async def on_ready():
     database.init_db()
+    bot.add_view(DashboardView())
     await bot.tree.sync()
     if not check_timers.is_running():
         check_timers.start()
