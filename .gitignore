@@ -1,0 +1,6 @@
+.env
+*.db
+__pycache__/
+*.pyc
+alert.mp3
+.venv/
